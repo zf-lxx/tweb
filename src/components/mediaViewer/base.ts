@@ -2657,7 +2657,29 @@ export default class AppMediaViewerBase<
         // * the more menu's actions on the shown video (Share at) wait for it
         this.updateMoreMenu();
 
+        // * Opening the viewer blurs the chat, and the animation intersector pauses
+        // * every unlocked video it knows about when that happens. The bubble
+        // * registers this element with it, so the pause landed on the video the
+        // * viewer had just taken over - leaving it parked behind the player's own
+        // * play button while everything else looked fine. It is under manual control
+        // * now, so lock it: `checkAnimation` returns early for locked items.
+        if(!isLiveStream) {
+          animationIntersector.getAnimations(video).forEach((item) => {
+            animationIntersector.toggleItemLock(item, true);
+          });
+        }
+
+        // * A stream that is already buffered has fired `canplay` long before this
+        // * viewer mounted (the bubble's own element keeps loading), and a one-shot
+        // * listener registered now would never run again: `canPlayThrough` would hang
+        // * forever, so the player never initialises, never starts playing and the
+        // * preloader never goes away. Resolve immediately when the element is ready.
         const canPlayThrough = new Promise((resolve) => {
+          if(video.readyState >= video.HAVE_FUTURE_DATA) {
+            resolve();
+            return;
+          }
+
           video.addEventListener('canplay', resolve, {once: true});
         });
 
@@ -2678,12 +2700,22 @@ export default class AppMediaViewerBase<
           }
         };
 
+        // * The open transition is the only thing gating the player, and a
+        // * transition that never reports completion (background tab, reduced
+        // * motion, a stream that is already playable) used to leave the viewer on
+        // * its spinner forever with a paused video behind it. Cap the wait: after
+        // * this the player initialises and starts playback on its own.
+        const animationSettled = Promise.race([
+          onAnimationEnd,
+          new Promise<void>((resolve) => setTimeout(resolve, 500))
+        ]);
+
         const createPlayer = async() => {
           if((media as MyDocument).type === 'gif') {
             return;
           }
 
-          const readyPromise = Promise.all([canPlayThrough, onAnimationEnd]);
+          const readyPromise = Promise.all([canPlayThrough, animationSettled]);
           if(!isLiveStream) { // should display interface for live streams instantly
             await readyPromise;
             if(this.tempId !== tempId) {
@@ -2797,14 +2829,18 @@ export default class AppMediaViewerBase<
         if(supportsStreaming || isLiveStream) {
           let attachedCanPlay = false, buffering = false;
 
-          const _onBuffering = (noCanPlay?: boolean) => {
+          const _onBuffering = (_noCanPlay?: boolean) => {
             if(buffering) {
               return;
             }
 
             buffering = true;
             onBuffering?.();
-            !noCanPlay && attachCanPlay();
+            // * Always register the teardown, including the animation-end call that
+            // * used to skip it: a stream that becomes playable during the open
+            // * animation would otherwise leave this preloader (and `is-buffering`)
+            // * on screen forever, with nothing left to fire `canplay` again.
+            attachCanPlay();
             preloader?.attach(mover, true);
 
             // поставлю класс для плеера, чтобы убрать большую иконку пока прелоадер на месте
@@ -2823,7 +2859,7 @@ export default class AppMediaViewerBase<
             }
 
             attachedCanPlay = true;
-            video.addEventListener('canplay', () => {
+            const onCanPlayEvent = () => {
               attachedCanPlay = false;
               buffering = false;
               onCanPlay?.();
@@ -2841,7 +2877,17 @@ export default class AppMediaViewerBase<
                   }
                 });
               }
-            }, {once: true});
+            };
+
+            // * Same already-ready case as canPlayThrough above: the element can be
+            // * past `canplay` here, and waiting for an event that will not come left
+            // * the spinner on top of a video that was in fact playable.
+            if(video.readyState >= video.HAVE_FUTURE_DATA) {
+              onCanPlayEvent();
+              return;
+            }
+
+            video.addEventListener('canplay', onCanPlayEvent, {once: true});
           };
 
           video.addEventListener('waiting', () => {
@@ -2875,14 +2921,28 @@ export default class AppMediaViewerBase<
 
           Promise.all([
             promise,
-            isLiveStream ? undefined : onAnimationEnd
+            isLiveStream ? undefined : animationSettled
           ]).then(async() => {
             if(this.tempId !== tempId) {
               this.log.warn('media viewer changed video');
               return;
             }
 
-            const url = (await getCacheContext()).url;
+            // * Where the element's URL comes from matters more than it looks. For a
+            // * downloaded video the cache context is the bubble's cached THUMBNAIL, and
+            // * pointing the <video> at that JPEG is exactly the `DEMUXER_ERROR_
+            // * COULD_NOT_OPEN` + paused player + never-ending spinner this viewer used to
+            // * show. `supportsStreaming` cannot be trusted either: it is decided once,
+            // * when the document is first seen, so a tab opened while the service worker
+            // * was still registering keeps `false` forever. Ask for the server URL
+            // * directly whenever the worker can serve it.
+            const mediaDoc = media as MyDocument;
+            const streamURL = !isLiveStream && apiManagerProxy.isServiceWorkerOnline() ?
+              getDocumentURL(mediaDoc) :
+              undefined;
+            const url = streamURL ||
+              (supportsStreaming || isLiveStream ? undefined : await promise) ||
+              (await getCacheContext()).url;
             // * keep a blob video's URL alive for seeks while the slide lives
             mover.middlewareHelper.get().onClean(pinObjectURL(url));
 
