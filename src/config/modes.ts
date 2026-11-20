@@ -141,7 +141,13 @@ const Modes = {
   // Triggers: ?noWorker=1 in the URL, or VITE_NO_WORKER injected at build time
   // by `bash scripts/start-preview.sh --no-worker`.
   noWorker: isFlagOn('noWorker') || !!import.meta.env.VITE_NO_WORKER,
-  multipleTransports: !!(import.meta.env.VITE_MTPROTO_AUTO && import.meta.env.VITE_MTPROTO_HAS_HTTP && import.meta.env.VITE_MTPROTO_HAS_WS) && !isFlagOn('noMultipleTransports'),
+  // * strict `=== '1'` on purpose: Vite exposes every VITE_* value as a string, so
+  // * `VITE_MTPROTO_AUTO=0` used to read as truthy here and silently enabled the
+  // * HTTP transport, which this self-hosted deployment does not serve at all.
+  multipleTransports: import.meta.env.VITE_MTPROTO_AUTO === '1' &&
+    import.meta.env.VITE_MTPROTO_HAS_HTTP === '1' &&
+    import.meta.env.VITE_MTPROTO_HAS_WS === '1' &&
+    !isFlagOn('noMultipleTransports'),
   // Perfect Forward Secrecy: every networker talks over a temporary auth key
   // bound to the stored permanent one (auth.bindTempAuthKey), replaced once it
   // expires or the server forgets it. On by default; ?noPfs=1 turns it off (the
@@ -160,7 +166,7 @@ const Modes = {
   memoryWatch: isFlagInURL('memoryWatch')
 };
 
-if(import.meta.env.VITE_MTPROTO_HAS_HTTP) {
+if(import.meta.env.VITE_MTPROTO_HAS_HTTP === '1') {
   const httpOnly = Modes.http = isFlagOn('http');
   if(httpOnly) {
     Modes.multipleTransports = false;

@@ -28,6 +28,10 @@ type Servers = {
   }
 };
 
+// Self-hosted telesrv deployment this build talks to. The MTProto listener
+// multiplexes plain TCP and WebSocket on /apiws, fronted by a TLS-terminating
+// reverse proxy, so the browser side is always wss://.
+const SELF_HOSTED_WS_BASE = 'wss://im.zhufu.de5.net';
 const TEST_SUFFIX = Modes.test ? '_test' : '';
 const PREMIUM_SUFFIX = '_premium';
 const RETRY_TIMEOUT_CLIENT = 3000;
@@ -50,39 +54,35 @@ export function assertValidDcId(dcId: DcId): DcId {
 }
 
 export function constructTelegramWebSocketUrl(_dcId: DcId, connectionType: ConnectionType, premium?: boolean) {
-  if(!import.meta.env.VITE_MTPROTO_HAS_WS) {
+  // * strict `=== '1'`: a "0" from .env is a truthy string and used to keep a
+  // * transport enabled against a server that does not serve it.
+  if(import.meta.env.VITE_MTPROTO_HAS_WS !== '1') {
     return;
   }
 
   const dcId = assertValidDcId(_dcId);
   const suffix = getTelegramConnectionSuffix(connectionType);
   const path = connectionType !== 'client' ? 'apiws' + TEST_SUFFIX + (premium ? PREMIUM_SUFFIX : '') : ('apiws' + TEST_SUFFIX);
-  const chosenServer = `wss://${App.suffix.toLowerCase()}ws${dcId}${suffix}.web.telegram.org/${path}`;
+  // Self-hosted servers run a single DC (telesrv advertises dc=2) and serve
+  // MTProto-over-WebSocket at /apiws on the same host as the web client.
+  const chosenServer = `${SELF_HOSTED_WS_BASE}/${path}`;
 
+  void dcId; void suffix;
   return chosenServer;
 }
 
 export class DcConfigurator {
   private sslSubdomains = ['pluto', 'venus', 'aurora', 'vesta', 'flora'];
 
-  private dcOptions = Modes.test ?
-    [
-      {id: 1, host: '149.154.175.10',  port: 80},
-      {id: 2, host: '149.154.167.40',  port: 80},
-      {id: 3, host: '149.154.175.117', port: 80}
-    ] :
-    [
-      {id: 1, host: '149.154.175.50',  port: 80},
-      {id: 2, host: '149.154.167.50',  port: 80},
-      {id: 3, host: '149.154.175.100', port: 80},
-      {id: 4, host: '149.154.167.91',  port: 80},
-      {id: 5, host: '149.154.171.5',   port: 80}
-    ];
+  // Self-hosted telesrv: one DC (id 2, matching TELESRV_DC and BASE_DC_ID).
+  private dcOptions = [
+    {id: 2, host: 'im.zhufu.de5.net', port: 443}
+  ];
 
   public chosenServers: Servers = {} as any;
 
   private transportSocket = (dcId: DcId, connectionType: ConnectionType, premium?: boolean) => {
-    if(!import.meta.env.VITE_MTPROTO_HAS_WS) {
+    if(import.meta.env.VITE_MTPROTO_HAS_WS !== '1') {
       return;
     }
 
@@ -102,16 +102,17 @@ export class DcConfigurator {
   };
 
   private transportHTTP = (dcId: DcId, connectionType: ConnectionType, premium?: boolean) => {
-    if(!import.meta.env.VITE_MTPROTO_HAS_HTTP) {
+    // * telesrv serves no HTTP MTProto transport (only /apiws), so this stays off:
+    // * .env keeps VITE_MTPROTO_HAS_HTTP empty and the check is strict.
+    if(import.meta.env.VITE_MTPROTO_HAS_HTTP !== '1') {
       return;
     }
 
     let chosenServer: string;
     if(Modes.ssl || !Modes.http) {
-      const suffix = getTelegramConnectionSuffix(connectionType);
-      const subdomain = this.sslSubdomains[dcId - 1] + suffix;
-      const path = Modes.test ? 'apiw_test1' : 'apiw1';
-      chosenServer = 'https://' + subdomain + '.web.telegram.org/' + path;
+      // * Unreachable while VITE_MTPROTO_HAS_HTTP is empty: telesrv serves no
+      // * /apiw1, so asking for it only yields a 404 and a -404 transport error.
+      chosenServer = 'https://im.zhufu.de5.net/apiw1';
     } else {
       for(const dcOption of this.dcOptions) {
         if(dcOption.id === dcId) {
@@ -157,7 +158,7 @@ export class DcConfigurator {
     if(!transports.length || !reuse/*  || (upload && transports.length < 1) */) {
       let transport: MTTransport;
 
-      if(import.meta.env.VITE_MTPROTO_HAS_WS && import.meta.env.VITE_MTPROTO_HAS_HTTP) {
+      if(import.meta.env.VITE_MTPROTO_HAS_WS === '1' && import.meta.env.VITE_MTPROTO_HAS_HTTP === '1') {
         transport = (transportType === 'websocket' ? this.transportSocket : this.transportHTTP)(dcId, connectionType, premium);
       } else if(!import.meta.env.VITE_MTPROTO_HTTP) {
         transport = this.transportSocket(dcId, connectionType, premium);

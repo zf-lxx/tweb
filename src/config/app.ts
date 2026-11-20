@@ -8,7 +8,15 @@
 import type {TrueDcId} from '@types';
 import {BASE_DC_ID} from '@lib/accounts/authKeyFingerprint';
 
-export const MAIN_DOMAINS = ['web.telegram.org', 'webk.telegram.org'];
+// Self-hosted replacement build.
+//
+// This list drives two behaviours that both have to stay off:
+//   * App.isMainDomain overwrites App.id/hash with the Webogram credentials;
+//   * TelegramMeWebManager enables only when location.hostname is listed, and
+//     then loads //telegram.me/_websync_ and //t.me/_websync_ — third-party
+//     scripts this deployment neither controls nor can reach.
+// Keeping it empty disables both.
+export const MAIN_DOMAINS: string[] = [];
 export const DEFAULT_BACKGROUND_SLUG = 'pattern';
 
 const threads = Math.min(4, navigator.hardwareConcurrency ?? 4);
